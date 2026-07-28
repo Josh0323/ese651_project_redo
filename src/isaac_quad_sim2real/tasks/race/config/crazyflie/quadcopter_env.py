@@ -248,6 +248,15 @@ class QuadcopterEnv(DirectRLEnv):
             self.rew = cfg.rewards
         elif self.cfg.is_train:
             raise ValueError("rewards not provided")
+        else:
+            # Play / eval: gym.make does not pass rewards; strategy get_rewards() still reads scales
+            # before discarding the tensor when is_train is False.
+            self.rew = {
+                "prog_delta_reward_scale": 0.5,
+                "gate_pass_reward_scale": 1.0,
+                "crash_reward_scale": -1.0,
+                "death_cost": -10.0,
+            }
 
         # Initialize tensors
         self._actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
@@ -450,7 +459,7 @@ class QuadcopterEnv(DirectRLEnv):
             quat_wxyz = np.roll(quat_xyzw, shift=1)  # now [w, x, y, z]
             self._waypoints_quat[i, :] = torch.tensor(quat_wxyz, device=self.device, dtype=torch.float32)
             rotmat_np_gate = rot_from_euler.as_matrix()
-            gate_normal_np = rotmat_np_gate[:, 0] 
+            gate_normal_np = rotmat_np_gate[:, 0]
             self._normal_vectors[i, :] = torch.tensor(gate_normal_np, device=self.device, dtype=torch.float32)
             current_gate_normal_world = Gf.Vec3d(float(gate_normal_np[0]), float(gate_normal_np[1]), float(gate_normal_np[2])).GetNormalized()
 
@@ -530,7 +539,7 @@ class QuadcopterEnv(DirectRLEnv):
 
             if arrow_parent_xform_prim and arrow_parent_xform_prim.IsValid():
                 default_arrow_up_axis = Gf.Vec3d(0.0, 1.0, 0.0)
-                inverted_gate_normal_world = -current_gate_normal_world 
+                inverted_gate_normal_world = -current_gate_normal_world
 
                 arrow_rotation = Gf.Rotation(default_arrow_up_axis, inverted_gate_normal_world)
                 arrow_orientation_quat = arrow_rotation.GetQuat()

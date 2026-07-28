@@ -106,14 +106,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir = os.path.join(log_root_path, log_dir)
 
     # TODO ----- START ----- Define rewards scales
-    # reward scales
-    progress_goal_reward_scale = 50.0
-    crash_reward = -1.0
+    # Paper-style weights: r_prog = lambda1 * (d_prev - d); tune as needed
+    prog_delta_reward_scale = 1
+    gate_pass_reward_scale = 5.0
+    crash_reward_scale = -4.0
     death_cost = -10.0
 
     rewards = {
-        'progress_goal_reward_scale': progress_goal_reward_scale,
-        'crash_reward_scale': crash_reward,
+        'prog_delta_reward_scale': prog_delta_reward_scale,
+        'gate_pass_reward_scale': gate_pass_reward_scale,
+        'crash_reward_scale': crash_reward_scale,
         'death_cost': death_cost,
     }
     # TODO ----- END -----
