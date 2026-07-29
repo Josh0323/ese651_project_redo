@@ -4,14 +4,16 @@
 
 A **solo, from-scratch redo of the simulation half (Phase 1 only)** of the ESE 6510 "Physical
 Intelligence" drone racing project. The class competition already happened — Josh and his
-teammate Kevin built a working version together (see the sibling `drone-project/` directory for
-that full history, results, and a 17-second 3-lap Powerloop time in simulation). This repo is a
-**separate, deliberate do-over**: Josh wants to watch an ML engineer work through the same
-assignment independently, end to end, with the reasoning made explicit at every step — not to
-produce a better result, but so he can learn the *process*.
+teammate Kevin built a working version together (see
+`/Users/joshthekorean/development/drone-project/` — a sibling directory to this repo, not a
+parent or child of it — for that full history, results, and a 17-second 3-lap Powerloop time in
+simulation). This repo is a **separate, deliberate do-over**: Josh wants to watch an ML engineer
+work through the same assignment independently, end to end, with the reasoning made explicit at
+every step — not to produce a better result, but so he can learn the *process*.
 
-**This is a from-scratch attempt. Do not copy PPO, reward, observation, or reset code from the
-sibling `drone-project/drone-racing` or `drone-project/archive/my_ese651_project` repos.** Reading
+**This is a from-scratch attempt. Do not copy PPO, reward, observation, or reset code from
+`/Users/joshthekorean/development/drone-project/drone-racing` or
+`/Users/joshthekorean/development/drone-project/archive/my_ese651_project`.** Reading
 them for inspiration on the underlying RL/robotics concepts is fine, but the actual implementation
 here should be your own reasoning, tried and iterated on its own merits. If you land on a similar
 solution to Kevin's, that's fine — the point is arriving there through your own hypothesis-and-test
@@ -52,7 +54,7 @@ should require it.
 
 Isaac Sim 4.5, Isaac Lab, and all Python dependencies are **already installed** on the GCP VM used
 for the original project. Do not reinstall or reconfigure any of this — it would waste real time
-and money for no benefit. See `../drone-project/CLAUDE.md` for full infrastructure details;
+and money for no benefit. See `/Users/joshthekorean/development/drone-project/CLAUDE.md` for full infrastructure details;
 summary:
 
 - VM: `instance-20260302-161614`, zone `us-central1-a`, `g2-standard-8` + 1x NVIDIA L4, project
@@ -188,15 +190,15 @@ This is the point of the whole exercise, more than the final metrics:
    training run — this saved real debugging time today (a `PYTHONPATH` bug and a W&B logging bug
    were both caught this way, cheaply, instead of discovered after an expensive full run).
 3. **Read the metrics, don't just glance at the final reward number.** See
-   `../drone-project/METRICS_GUIDE.md` for a full walkthrough of what each W&B/console metric
+   `/Users/joshthekorean/development/drone-project/METRICS_GUIDE.md` for a full walkthrough of what each W&B/console metric
    means and how to use them diagnostically (PPO-health metrics vs. task-performance metrics,
    decomposing an aggregate reward into its components to find out *why* it moved, etc.) — written
    today specifically to close this gap. Read it before your first real training run, not after.
 4. **Iterate like a scientist, not by guessing.** Form a specific hypothesis, run an experiment
    that tests it, look at the actual data, then decide the next step — and write all four of those
    down. For a good worked example of this exact process (including things tried and reverted),
-   see `../drone-project/drone-racing/WRITEUP.md` (Kevin's own reward-design writeup) and
-   `../drone-project/IMPROVEMENT_LOG.md` (today's session's retraining log) for the *format* to
+   see `/Users/joshthekorean/development/drone-project/drone-racing/WRITEUP.md` (Kevin's own reward-design writeup) and
+   `/Users/joshthekorean/development/drone-project/IMPROVEMENT_LOG.md` (today's session's retraining log) for the *format* to
    emulate — not the content to copy.
 5. **Keep a running log as you go**, not a retroactive summary at the end. Create
    `EXPERIMENT_LOG.md` in this repo now (before starting PPO) and update it after every
@@ -211,5 +213,5 @@ This is the point of the whole exercise, more than the final metrics:
 By the end: a trained policy that races the Powerloop track well in simulation, `EXPERIMENT_LOG.md`
 documenting the full process per the above, and a final results writeup (reward curves, lap
 completion, whatever else the metrics guide suggests is worth reporting) comparable in spirit to
-`../drone-project/PROJECT_REPORT.md`'s results section — but this repo's own, separate one,
+`/Users/joshthekorean/development/drone-project/PROJECT_REPORT.md`'s results section — but this repo's own, separate one,
 reflecting this redo's own numbers, not the original team's.
