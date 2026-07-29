@@ -272,3 +272,70 @@ test of the hypothesis above — do action-std and value loss start moving in th
 once task performance itself levels off.
 
 ---
+
+## 2026-07-29 — Milestone 1: PPO validated (600-iteration run + video review)
+
+**Goal.** Resolve the two open questions from the 200-iteration run (flat action-std, non-converging
+value loss) by testing the "just needs more iterations" hypothesis directly, then confirm the
+resulting behavior actually looks like hovering, not just scores well.
+
+**What I did.** Same config as Phase 1c, `max_iterations=600` (fresh run, not resumed — see the LR
+gap noted above). Run: https://wandb.ai/ese651/ese651_quadcopter_josh_redo/runs/3t7dykbe. Then
+loaded `best_model.pt` from this run into `play_race.py` (`--num_envs 1 --video --video_length 300`),
+downloaded the resulting video, and reviewed extracted frames directly rather than trusting the
+metrics alone.
+
+**Result — hypothesis confirmed, with real numbers across the full trajectory:**
+
+| | Smoke test (20 it) | Phase 1c (200 it) | Extended (600 it) |
+|---|---|---|---|
+| Mean total reward | 1413 → 2174 | → 4784 | → **47,629–50,612** (peak 60,410 @ it 550) |
+| `Episode_Reward/progress_goal` | 46.5 → 74.5 | → 157.3 | → **~1,489–1,985** |
+| Mean episode length (steps, max 1500) | ~100–116 | → ~256 | → **~1,249–1,302** |
+| `Episode_Termination/time_out` | 0 | 0 (always died first) | **1.04–1.58** (now the dominant ending) |
+| `Episode_Termination/died` | 2.4–2.9 (of 256 envs) | 8.1–9.0 (of 2048 envs) | **0.04–0.42** (of 2048 envs) |
+| Mean action noise std | 1.00 → 0.99 | → 1.02–1.03 (flat/up) | → **0.82**, clearly shrinking |
+| Value function loss | 17k → 20k | → 21k–30k (noisy) | mid-run 68.7k, **final 2.8k–5.4k** |
+| `Loss/learning_rate` (adaptive) | rising toward ceiling | hit ceiling (0.01) | **0.00038** — schedule throttled itself back down |
+
+Every one of the ambiguous signals from the 200-iteration run resolved itself with more training,
+exactly as the working hypothesis predicted: episodes now overwhelmingly end via `time_out` instead
+of `died` (a real behavioral shift, not just a bigger number), action-std is now visibly and
+monotonically shrinking, and value loss dropped by roughly an order of magnitude once task
+performance itself stopped changing so fast under it. The adaptive-KL learning-rate schedule's own
+trajectory (ramp up early when updates are "cheap" against a near-random policy → throttle down hard
+as the policy commits to specific behavior) is itself a nice confirmation that the mechanism I
+implemented is self-regulating correctly, not just inert code that happens not to crash.
+
+**Result — the video review caught something the numbers alone didn't make obvious.** The policy
+*is* genuinely stable — frames sampled across the full 6-second clip show the drone parked in almost
+exactly the same spot the whole time, matching the near-zero death rate. But that spot is **tucked
+into a corner of gate 0's frame, not centered on the goal marker or anywhere near the actual 1×1m
+opening**. This is a clean, concrete illustration of exactly what the assignment means by "the stub
+reward will not produce a racing policy": `progress = 1 - tanh(distance/3)` saturates quickly, so
+once the drone is "close enough," there's very little additional reward gradient pulling it the rest
+of the way to the true goal position — and if drifting closer carries any risk (of a contact-sensor
+hit near the frame, say), the policy has no reason to take it. This isn't a bug in my PPO
+implementation; it's the expected, honest failure mode of a distance-only reward with no explicit
+notion of "passed through the opening," which is precisely what Section 3 needs to fix.
+
+**Checkpoint criteria from the assignment, assessed explicitly rather than assumed:**
+- "`progress_goal` climbing" — yes, clearly and substantially (46 → ~1,900+).
+- "`crash` staying near zero" — yes, throughout (-0.003 to -0.23, no worsening trend).
+- "`gate_pass` never firing" — **not actually checkable on this stub**: the current reward dict only
+  has `progress_goal_reward_scale`/`crash_reward_scale`/`death_cost`, so there's no `gate_pass`
+  reward component or `Episode_Reward/gate_pass` metric logged at all yet (and `_n_gates_passed` is
+  never incremented in the stub, confirmed back in the Phase 0 entry). This criterion is vacuously
+  true right now rather than something I actually verified — worth being precise about rather than
+  claiming a check I didn't really perform.
+
+**Conclusion.** PPO's `update()` implementation is validated: mechanically correct (no crashes, sane
+losses, all three return values wired and consumed correctly by the runner/logger), and it produces
+the exact qualitative behavior change over training that the theory predicts (KL-adaptive LR
+self-regulating, exploration narrowing as confidence grows, episodes surviving longer as the policy
+improves). This is **Milestone 1**. Moving on to Section 3 (reward/observation/reset redesign) next
+— and the corner-hovering finding above directly motivates the first concrete design change: a
+gate-pass condition needs to actually verify passage through the opening, not just proximity to the
+gate.
+
+---
