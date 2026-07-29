@@ -204,3 +204,71 @@ assignment's "hover near gate 0" checkpoint and get a real read on whether the v
 this run was just short-horizon noise.
 
 ---
+
+## 2026-07-29 — Phase 1c: longer PPO checkpoint run (still unmodified stub reward)
+
+**Goal.** Reach the assignment's actual Section-2 checkpoint — a policy that hovers near gate 0 —
+and get enough iterations to tell whether the smoke test's inconclusive value-loss trend was real or
+just short-horizon noise.
+
+**What I did.** `num_envs=2048`, `max_iterations=200`, unmodified stub reward, `--logger wandb`.
+Run: https://wandb.ai/ese651/ese651_quadcopter_josh_redo/runs/dzl2jjhd
+
+**Result — the good signs.** Every *task*-level metric moved in the right direction, clearly and
+monotonically, over the full 200 iterations:
+- Mean total reward: 1413 → 4784 (roughly 3.4x)
+- `Episode_Reward/progress_goal`: 46.5 → 157.3
+- `Episode_Reward/crash`: stayed small throughout (-0.11 to -0.23, no trend toward worse)
+- Mean episode length: ~100 → ~256 steps (survives noticeably longer without dying)
+- Throughput: ~28,000 steps/s at this scale (2048 envs) — cheap, ~350s of actual compute for the
+  full run
+
+**Result — two things I'm not immediately certain about, logged honestly rather than glossed over:**
+1. **Mean action noise std did not shrink** — 1.00 at init, still ~1.02–1.03 at iteration 199. Per
+   the metrics guide this is normally a red flag ("doesn't shrink → policy never commits to
+   confident behavior"). But my first instinct going in — "if std collapses too early, add
+   `entropy_coef`" (logged in the Phase 1a entry above) — turns out to be the fix for the *opposite*
+   problem. This is std failing to shrink at all, and adding entropy_coef would push the *wrong*
+   direction (a positive entropy coefficient rewards staying stochastic, which would suppress
+   shrinkage further, not encourage it). That earlier contingency plan doesn't apply here; I need a
+   fresh hypothesis for this actual failure mode.
+2. **Value function loss did not clearly trend down** — oscillating in the 17k–30k range across all
+   200 iterations. In isolation this also reads as a red flag per the guide.
+
+**Working hypothesis, and why I'm not treating either as a confirmed bug yet.** Both anomalies may
+be the *same* underlying story rather than two separate problems: if the critic isn't fitting well
+(hence the flat/noisy value loss), the advantage estimates it produces are correspondingly noisy,
+which would directly explain why the policy isn't getting a clean, consistent gradient signal to
+confidently narrow its action distribution (hence flat std). And the more parsimonious explanation
+for *why* the critic hasn't converged yet: every task-relevant metric (reward, progress_goal,
+episode length) was **still visibly, steeply climbing** at iteration 199, not plateaued — this run
+was cut off while clearly still in an early, fast-improving phase, and `Episode_Termination/time_out`
+sat at exactly 0.0 the entire run (episodes are *always* ending via early death, never surviving to
+the full 30s/1500-step episode) — so a genuinely stable hover hasn't been reached yet either. Given
+that, it would be premature to expect the "confidence" signals (shrinking std, converging value
+loss) to have kicked in — those typically lag task performance, not lead it. I don't have strong
+enough evidence to rule out a real bug, but "just needs more iterations" is the more likely
+explanation given the trend, and it's also the cheapest hypothesis to test directly.
+
+**Investigated one more thing before deciding how to extend the run**: whether the adaptive
+learning rate would survive a `--resume`. Checked `on_policy_runner.py`'s `save()`/`load()` directly
+rather than assuming. Finding: the *optimizer's* actual LR round-trips correctly (Adam's
+`state_dict` includes `param_groups[...]['lr']`, and `load()` restores it). But `self.alg.learning_rate`
+— the plain attribute my adaptive-KL code reads and writes every update, and which
+`Loss/learning_rate` logs — is **not** persisted anywhere; `PPO.__init__` always re-seeds it from
+the config's default (5e-4) on every process start, resume or not. So a `--resume`d run would start
+its first update computing the adaptive adjustment from 5e-4, then immediately overwrite the
+correctly-restored 0.01 optimizer LR with whatever that computes — silently clobbering the resumed
+state with a discontinuity. Not fixing this now (it's not blocking anything and isn't needed to hit
+Milestone 1), but noting it as a real, minor gap rather than letting it bite silently later if I
+reach for `--resume` on a more expensive run.
+
+**Conclusion / next step.** Given the resume-LR quirk above, extending via a clean *fresh* run
+(same `num_envs=2048`, longer `max_iterations`) is more interpretable than resuming — no
+discontinuity to account for when reading the curve. Launching `max_iterations=600` (3x this run)
+next, same everything else, specifically to check: does `progress_goal`/reward growth start to
+plateau, does episode length approach the full 1500-step max (a real stable hover), and — the actual
+test of the hypothesis above — do action-std and value loss start moving in the expected direction
+once task performance itself levels off.
+
+---
