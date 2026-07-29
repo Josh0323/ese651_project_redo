@@ -159,3 +159,48 @@ action-noise std actually moving off its 1.0 init. Checking in with Josh before 
 real GCP compute use this session.
 
 ---
+
+## 2026-07-29 — Phase 1b: PPO smoke test (unmodified stub reward)
+
+**Goal.** Cheap confirmation that `update()` actually runs correctly on real hardware before
+spending any real compute on a full checkpoint run — catch shape bugs, NaNs, or a hung process while
+it's still nearly free.
+
+**What I did.** `num_envs=256`, `max_iterations=20`, unmodified stub reward/obs/reset, `--logger
+wandb` (run: https://wandb.ai/ese651/ese651_quadcopter_josh_redo/runs/4hmlqnk9). Ran on the VM via a
+`nohup`'d background process over SSH so I could poll the log without holding the session open.
+
+**Result.**
+- Ran to completion (all 20 iterations) with no crash, no hang, no NaN/Inf anywhere in the log.
+- `Surrogate loss`: 0.0143 → 0.0002 → ... → -0.0014 — small-magnitude and noisy around zero, not
+  pinned at exactly 0 (would mean no gradient reaching the actor) and not blowing up. Matches what
+  the metrics guide says to expect — this one isn't supposed to visibly "converge."
+- `Mean action noise std`: 1.00 at the start, 0.99 by iteration 14 — moving in the right direction,
+  just slowly, which is expected this early (the metrics guide's own reference run was still near
+  1.0 at iteration ~27).
+- `Episode_Reward/progress_goal`: 46.45 (iter 4) → 74.51 (iter 18) — climbing, as expected even with
+  the hover-only stub reward.
+- `Episode_Reward/crash`: stayed small (-0.004 to -0.17) throughout.
+- `Value function loss`: 17k → 30k, i.e. **not** trending down within just 20 iterations — flagged
+  as a real open question, not brushed aside: could be normal (not remotely enough iterations for the
+  critic to converge, especially while the adaptive-KL schedule was simultaneously ramping the
+  learning rate up toward its ceiling, meaning the policy — and therefore the value target
+  distribution — was still shifting fast), or could indicate a real problem with the value loss
+  wiring. Twenty iterations isn't enough evidence either way; watching this specifically in the
+  longer Phase 1c run rather than guessing now.
+- `Loss/learning_rate` ended at 0.01 — the adaptive-KL schedule's upper clamp. Confirms the schedule
+  is actually executing and adjusting (not just inert code): with a near-random early policy, KL
+  divergence per update is naturally small, so the "ramp up when below desired_kl/2" branch fired
+  repeatedly until it hit the ceiling I set.
+- Confirmed the W&B fix actually works end-to-end: the log shows `wandb: Run summary`, a full
+  `Run history`, and `wandb: Synced 5 W&B file(s)...` — `wandb.finish()` ran and closed out the run
+  cleanly before `simulation_app.close()`, so this shows as a finished run rather than "Crashed".
+- Confirmed logging isolation: the run landed under `ese651/ese651_quadcopter_josh_redo`, not the
+  shared `ese651_quadcopter` project.
+
+**Conclusion / next step.** PPO passes the cheap smoke test — proceeding to Phase 1c, a longer run
+(`num_envs=2048`, `max_iterations=200`, still the unmodified stub reward) to actually reach the
+assignment's "hover near gate 0" checkpoint and get a real read on whether the value loss trend from
+this run was just short-horizon noise.
+
+---
