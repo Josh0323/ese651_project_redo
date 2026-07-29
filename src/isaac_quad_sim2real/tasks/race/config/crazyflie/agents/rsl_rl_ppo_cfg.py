@@ -15,7 +15,9 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 50
     experiment_name = "quadcopter_direct"
     empirical_normalization = False
-    wandb_project = "ese651_quadcopter"  # Wandb project name for logging
+    # Separate W&B project from the shared team default ("ese651_quadcopter", used by Kevin's
+    # drone-racing repo) so this solo redo's runs don't mix into it.
+    wandb_project = "ese651_quadcopter_josh_redo"  # Wandb project name for logging
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[128, 128],
