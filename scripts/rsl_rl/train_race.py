@@ -166,6 +166,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
+    # Isaac Sim's simulation_app.close() below hard-exits the process and skips atexit handlers, so
+    # wandb.finish() (wired up as WandbSummaryWriter.stop()) never runs on its own -- every run shows
+    # "Crashed" on the dashboard even on success unless we call it explicitly here. The default
+    # (tensorboard) SummaryWriter has no stop() method, hence the hasattr guard.
+    if hasattr(runner.writer, "stop"):
+        runner.writer.stop()
+
     # close the simulator
     env.close()
 
