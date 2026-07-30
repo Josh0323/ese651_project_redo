@@ -554,4 +554,51 @@ spent either way.
 
 **Conclusion / next step.** Implement, syntax-check locally, then a small VM run.
 
+**Result.** `num_envs=64, max_iterations=5` on the VM: ran clean, no shape/construction errors — the
+actor/critic sized itself correctly against the new 19-dim vector with no changes needed elsewhere.
+`gate_pass` and `crash` both read exactly `0.0000` the whole run, which is expected rather than
+suspicious at this scale: episodes are only lasting ~60–75 steps here, and the crash penalty is
+gated to not count until `episode_length_buf > 100` (existing stub logic, unchanged) — it literally
+cannot have fired yet. Moving to 2d.
+
+---
+
+## 2026-07-29 — Phase 2d design: reset randomization
+
+**Goal.** Randomize starting gate, position, heading, and initial velocity instead of always
+spawning fixed behind gate 0 — the last piece before a real full-track training run (2e).
+
+**Design.**
+- **Random starting gate**: `waypoint_indices` uniform over all 7 (`torch.randint`) instead of
+  hardcoded zeros. Exposes the policy to the whole course from iteration 0 instead of only ever
+  training near gate 0 and hoping it generalizes later.
+- **Position**: kept the existing local-frame rotation math (it already correctly generalizes to any
+  gate once `waypoint_indices` isn't hardcoded — didn't need to change that part), randomizing what
+  were previously fixed constants: distance behind the gate `1.0–3.0m` (was fixed `2.0`), added
+  lateral jitter `±0.7m` and height jitter `±0.3m` (previously zero for both). Height jitter is
+  relative to *each gate's own* z, so it's safe against the env's altitude bounds regardless of
+  which gate gets sampled (checked both gate heights in this track, 0.75m and 2.0m, against
+  `min_altitude=0.1`/`max_altitude=3.0` — comfortable margin either way).
+- **Checked one thing before assuming it still holds**: Phase 2a's gate-pass detector relies on
+  `_prev_x_drone_wrt_gate` being reset to `+1.0`, on the assumption the drone spawns on the
+  *positive*-local-x side of its target gate. That assumption was true for the old fixed spawn by
+  construction (fixed negative `x_local`) — does it survive randomizing the gate and adding jitter?
+  Yes: `x_local` stays strictly negative (I only randomized its *magnitude*, `1.0–3.0` instead of a
+  fixed `2.0`), and the same rotation math applies regardless of which gate's `theta` is used, so the
+  drone still ends up on the positive-local-x side of whatever gate got sampled, every time. The
+  *sign* is what the sentinel depends on, not the exact spawn distance — worth confirming explicitly
+  rather than assuming a change elsewhere didn't quietly invalidate it.
+- **Heading**: kept the existing `atan2`-toward-gate formula (already correctly accounts for lateral
+  jitter, since it computes the angle from the *actual* jittered spawn point to the gate, not a fixed
+  offset) — just widened the yaw noise from the stub's `±0.15` to `±0.3` rad, since there's now real
+  heading diversity across gates/positions to cover, not one fixed approach angle.
+- **Initial velocity**: new — previously always zero. Direction computed toward the sampled gate
+  (normalized spawn→gate vector), magnitude `uniform(0, 3) m/s`. This is a genuinely first-principles
+  guess (plausible approach speed given this track's gate spacing), not a derived or tuned number —
+  flagging that explicitly since it's exactly the kind of thing to revisit once there's real racing
+  data to look at.
+
+**Conclusion / next step.** Implement, syntax-check, then straight to 2e — a real full-track training
+run, since 2a-2d are all in place after this.
+
 ---

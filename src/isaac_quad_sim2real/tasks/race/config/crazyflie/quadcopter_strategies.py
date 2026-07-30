@@ -243,11 +243,13 @@ class DefaultQuadcopterStrategy:
         default_root_state = self.env._robot.data.default_root_state[env_ids]
 
         # TODO ----- START ----- Define the initial state during training after resetting an environment.
-        # This example code initializes the drone 2m behind the first gate. You should delete it or heavily
-        # modify it once you begin the racing task.
+        # Randomize which gate the episode starts near (uniform over all 7) so the policy sees the
+        # whole course from the start, plus position/heading/velocity jitter approximating realistic
+        # mid-race approach conditions rather than always starting from rest at a fixed offset.
 
-        # start from the zeroth waypoint (beginning of the race)
-        waypoint_indices = torch.zeros(n_reset, device=self.device, dtype=self.env._idx_wp.dtype)
+        waypoint_indices = torch.randint(
+            0, self.env._waypoints.shape[0], (n_reset,), device=self.device, dtype=self.env._idx_wp.dtype
+        )
 
         # get starting poses behind waypoints
         x0_wp = self.env._waypoints[waypoint_indices][:, 0]
@@ -255,9 +257,13 @@ class DefaultQuadcopterStrategy:
         theta = self.env._waypoints[waypoint_indices][:, -1]
         z_wp = self.env._waypoints[waypoint_indices][:, 2]
 
-        x_local = -2.0 * torch.ones(n_reset, device=self.device)
-        y_local = torch.zeros(n_reset, device=self.device)
-        z_local = torch.zeros(n_reset, device=self.device)
+        # x_local stays negative so the drone spawns on the *positive* local-x side of the gate after
+        # the rotation below -- matching the +1.0 sentinel _prev_x_drone_wrt_gate gets reset to
+        # further down, regardless of which gate/jitter got sampled (only the sign matters here, and
+        # it's preserved for any negative x_local).
+        x_local = -torch.empty(n_reset, device=self.device).uniform_(1.0, 3.0)   # distance behind the gate
+        y_local = torch.empty(n_reset, device=self.device).uniform_(-0.7, 0.7)   # lateral jitter
+        z_local = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)   # height jitter, relative to this gate's own z
 
         # rotate local pos to global frame
         cos_theta = torch.cos(theta)
@@ -272,14 +278,24 @@ class DefaultQuadcopterStrategy:
         default_root_state[:, 1] = initial_y
         default_root_state[:, 2] = initial_z
 
-        # point drone towards the zeroth gate
+        # point drone towards its target gate; this already accounts for the lateral jitter above
+        # since it's computed from the actual (jittered) spawn point, not a fixed offset
         initial_yaw = torch.atan2(y0_wp - initial_y, x0_wp - initial_x)
         quat = quat_from_euler_xyz(
-            torch.zeros(1, device=self.device),
-            torch.zeros(1, device=self.device),
-            initial_yaw + torch.empty(1, device=self.device).uniform_(-0.15, 0.15)
+            torch.zeros(n_reset, device=self.device),
+            torch.zeros(n_reset, device=self.device),
+            initial_yaw + torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)
         )
         default_root_state[:, 3:7] = quat
+
+        # Randomized initial velocity toward the gate -- approximates the mid-race condition where a
+        # gate becomes the current target while the drone is already moving, not just starting from
+        # rest every time. 0-3 m/s is a first-principles guess (plausible approach speed given this
+        # track's gate spacing), not a derived or tuned number.
+        direction_to_gate = torch.stack([x0_wp - initial_x, y0_wp - initial_y, z_wp - initial_z], dim=1)
+        direction_to_gate = direction_to_gate / (torch.linalg.norm(direction_to_gate, dim=1, keepdim=True) + 1e-6)
+        initial_speed = torch.empty(n_reset, device=self.device).uniform_(0.0, 3.0)
+        default_root_state[:, 7:10] = direction_to_gate * initial_speed.unsqueeze(1)
         # TODO ----- END -----
 
         # Handle play mode initial position
