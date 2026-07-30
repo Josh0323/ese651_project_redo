@@ -675,3 +675,57 @@ just to backfill this one metric — it'll be available from the next real run o
 itself, falling back to a direct checkpoint/video check to get real gates-passed evidence instead.
 
 ---
+
+## 2026-07-29 — Milestone 2: initial reward/observation/reset design produces real racing behavior
+
+**What I did.** Loaded Phase 2e's `best_model.pt` into `play_race.py` (`--num_envs 1 --video
+--video_length 1000`, ~20s of flight), downloaded the video, reviewed frames sampled across the full
+clip rather than just the start.
+
+**Result.** This is a fundamentally different behavior from Milestone 1's video, not just a better
+score on the same behavior. Milestone 1's checkpoint found one stable spot near a gate corner and
+stayed there for the entire clip. This checkpoint is genuinely racing: sampled frames across the
+20-second clip show the drone near at least 3-4 *different* gate frames in sequence (not the same
+one repeatedly), consistently showing real motion blur — i.e. actual speed, not hovering — and in
+several frames passing close to the gate's center/goal marker rather than clipping a corner. I'm not
+claiming an exact gate-pass count from this alone (sparse frame sampling isn't precise enough for
+that, and this run predates the `gates_passed_mean` fix above) — but "does this look like racing or
+does it look like reward-hacking a static safe spot" was the actual question the video needed to
+answer, and the answer is clearly the former.
+
+**Quantitative picture, from Phase 2e's actual training run:**
+- Reward converged (not cut off mid-improvement like the first PPO checkpoint run was) — climbed
+  steeply through the first third, then leveled off around 7,600–7,700 for the back half.
+- `Episode_Reward/gate_pass` settled at 85–91, `crash` at essentially zero, `progress_goal` at
+  155–167 — all stable in the back half of the run, not still trending.
+- Episodes surviving to 1,444–1,474 of a 1,500-step max, `time_out` clearly dominant over `died`
+  (0.08–0.21) — consistent with a policy that's found something it can sustain, not something
+  fragile.
+- Action-noise std converged to 0.16 — tighter/more committed than Milestone 1's 0.82, meaning the
+  policy is confident here, not still exploring broadly.
+- Value function loss converged to 130-170, an order of magnitude tighter than Milestone 1's
+  converged value (expected — different reward scale, see the Phase 2e entry above for why that's
+  not a like-for-like comparison).
+
+**Honest gaps, stated plainly rather than glossed over:**
+- No precise gates-passed-per-episode or laps-completed number for *this* run — `gates_passed_mean`
+  logging didn't exist yet when it ran. The next real training run will have it.
+- Haven't specifically checked whether the powerloop (gates 2/3, the vertical-loop maneuver) or the
+  chicane (5/6/0) are lagging behind the rest of the track — the video happened to sample gates that
+  looked more like the simpler segments. Worth checking with a per-gate breakdown once
+  `gates_passed_mean` gives a real baseline to compare against.
+- `progress_goal_reward_scale` was never revisited after the 2b form-change (still `50.0`, the
+  original stub's number, chosen for a completely different reward shape) — it happens to have
+  produced a working result, but that's not the same as having confirmed it's well-tuned relative to
+  `gate_pass_reward_scale=100.0`.
+- Haven't touched hyperparameters or dynamics domain randomization at all yet — this is Phase 5,
+  still ahead, and the current result says nothing about robustness to the eval-time perturbations.
+
+**Conclusion.** The reward/observation/reset redesign works — not just mechanically (which 2a-2d's
+individual smoke tests already showed) but as an actual racing policy, on the first real full-track
+attempt. This is **Milestone 2**. Next: decide between (a) a longer run at this same design to see
+how far it goes before plateauing for real, or (b) using the now-available `gates_passed_mean` and a
+per-gate breakdown to check the powerloop/chicane specifically before investing in a longer run —
+leaning toward (b) since it's cheaper and more informative than just scaling up blindly.
+
+---
