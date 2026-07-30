@@ -463,3 +463,37 @@ crash/NaN, and `Episode_Reward/progress_goal`'s new magnitude (expected to look 
 now that it's a bounded delta instead of an O(1)-every-step closeness value).
 
 ---
+
+## 2026-07-29 — Phase 2a+2b smoke test (256 envs, 20 iterations, still fixed gate-0 spawn)
+
+**Goal.** Cheap check that both new mechanisms actually run and behave sanely before spending more
+compute — not looking for real learning progress at 20 iterations, just: does it crash, does
+`gate_pass` fire at all, does `progress_goal`'s new form look like a bounded delta rather than the
+old saturating closeness value.
+
+**Result.** Ran clean, no crash/NaN/traceback.
+- `Episode_Reward/gate_pass`: 0.30–0.68 (nonzero) — the sign-change + opening-bounds detector is
+  actually firing, even under a still-mostly-random 20-iteration policy in 256 parallel envs. That's
+  the main thing this smoke test needed to prove.
+- `Episode_Reward/progress_goal`: now fluctuating, including negative values (-3.55 to -0.59) — a
+  real, expected behavior change, not a red flag. A delta-based reward should average out close to
+  zero (positive and negative in roughly equal measure) under an undirected/near-random policy,
+  unlike the old closeness bonus which was structurally always positive regardless of motion
+  direction. This is actually the more honest signal — right now the reward is correctly reporting
+  "the policy isn't moving purposefully yet," which the old reward form couldn't distinguish from
+  "the policy is doing fine."
+- `Value function loss`: 441–600, a ~40x drop from the old reward's 17k–30k at the same point in
+  training. Purely a scale artifact: the new progress term's per-step magnitude is bounded and much
+  smaller than the old form's O(1)-every-step value, so returns (and their squared error) are
+  naturally smaller. Not a sign the critic got better or worse, just a different unit scale to
+  recalibrate expectations around.
+- `Mean total reward`: negative (-21 to -64) for the same underlying reason as `progress_goal`.
+- Termination/death rate, action-noise std: consistent with what earlier 20-iteration runs looked
+  like — this smoke test isn't long enough to expect movement here yet.
+
+**Conclusion.** Both mechanisms work end-to-end. Not running a longer validation pass on 2a+2b in
+isolation — per the phased plan, the real substantive training run happens at 2e once observations
+(2c) and reset randomization (2d) are also in place; each sub-phase before that just needs a cheap
+"does it run correctly" check, not a convergence run. Moving to 2c.
+
+---
