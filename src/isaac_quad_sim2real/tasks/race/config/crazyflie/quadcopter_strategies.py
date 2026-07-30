@@ -66,38 +66,76 @@ class DefaultQuadcopterStrategy:
         self.env._thrust_to_weight[:] = self.env._twr_value
 
     def get_rewards(self) -> torch.Tensor:
-        """get_rewards() is called per timestep. This is where you define your reward structure and compute them
-        according to the reward scales you tune in train_race.py. The following is an example reward structure that
-        causes the drone to hover near the zeroth gate. It will not produce a racing policy, but simply serves as proof
-        if your PPO implementation works. You should delete it or heavily modify it once you begin the racing task."""
+        """get_rewards() is called per timestep. Reward structure for racing the Powerloop track:
+        directional gate-pass detection through the actual opening (not just proximity to the gate),
+        distance-based progress shaping toward the current gate, and a contact-sensor-driven crash
+        penalty. See EXPERIMENT_LOG.md for the design reasoning behind each piece."""
 
-        # TODO ----- START ----- Define the tensors required for your custom reward structure
-        # check to change waypoint
-        dist_to_gate = torch.linalg.norm(self.env._pose_drone_wrt_gate, dim=1)
-        gate_passed = dist_to_gate < 0.1
+        # Gate-pass detection: sign change of the drone's position along the *current target gate's*
+        # own local forward axis (_pose_drone_wrt_gate[:, 0] -- this is in the same rotation
+        # convention as _normal_vectors, since both come from _waypoints_quat), combined with
+        # lateral/vertical bounds so it counts as passing through the opening, not just crossing the
+        # infinite gate plane. _prev_x_drone_wrt_gate starts at +1.0 on reset (drone spawns on the
+        # positive side, per reset_idx's spawn-position math), so a forward pass is a + -> - crossing.
+        x_now = self.env._pose_drone_wrt_gate[:, 0]
+        y_now = self.env._pose_drone_wrt_gate[:, 1]
+        z_now = self.env._pose_drone_wrt_gate[:, 2]
+        x_prev = self.env._prev_x_drone_wrt_gate
+
+        gate_half_extent = self.env._gate_model_cfg_data.gate_side / 2.0 * 0.8
+        crossed_plane = (x_prev > 0) & (x_now <= 0)
+        within_opening = (torch.abs(y_now) < gate_half_extent) & (torch.abs(z_now) < gate_half_extent)
+        gate_passed = crossed_plane & within_opening
         ids_gate_passed = torch.where(gate_passed)[0]
+
+        # Distance from the gate's centerline at the moment of passing, for the quality-scaled bonus.
+        pass_offset_from_center = torch.sqrt(y_now**2 + z_now**2)
+
         self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % self.env._waypoints.shape[0]
+        self.env._n_gates_passed[ids_gate_passed] += 1
 
         # set desired positions in the world frame
         self.env._desired_pos_w[ids_gate_passed, :2] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], :2]
         self.env._desired_pos_w[ids_gate_passed, 2] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], 2]
 
-        # calculate progress via distance to goal
+        # Cache this step's gate-relative x for next step's sign-change check. For envs that just
+        # passed, _idx_wp changed above, so next step's _pose_drone_wrt_gate will already be in the
+        # *new* gate's frame -- recompute against that new target now, before caching, so the
+        # comparison next step stays apples-to-apples instead of comparing two unrelated gates' frames.
+        self.env._prev_x_drone_wrt_gate = x_now.clone()
+        if len(ids_gate_passed) > 0:
+            new_pose_wrt_gate, _ = subtract_frame_transforms(
+                self.env._waypoints[self.env._idx_wp[ids_gate_passed], :3],
+                self.env._waypoints_quat[self.env._idx_wp[ids_gate_passed], :],
+                self.env._robot.data.root_link_pos_w[ids_gate_passed],
+            )
+            self.env._prev_x_drone_wrt_gate[ids_gate_passed] = new_pose_wrt_gate[:, 0]
+
+        # Progress reward: potential-based shaping on the *decrease* in distance to the current
+        # goal, not raw closeness -- rewards actually moving toward the gate rather than just being
+        # near it (the Milestone-1 checkpoint settled for "close enough" near a gate corner under the
+        # old closeness-bonus form, instead of flying to the goal -- see EXPERIMENT_LOG.md).
         distance_to_goal = torch.linalg.norm(self.env._desired_pos_w - self.env._robot.data.root_link_pos_w, dim=1)
-        distance_to_goal = torch.tanh(distance_to_goal/3.0)
-        progress = 1 - distance_to_goal  # distance_to_goal is between 0 and 1 where 0 means the drone reached the goal
+        progress = self.env._last_distance_to_goal - distance_to_goal
+        progress = torch.clamp(progress, min=-1.0, max=1.0)  # defensive bound; shouldn't bind at realistic speeds
+        # Zero out on the exact step the target gate switched: comparing distance-to-old-target
+        # against distance-to-new-target isn't a meaningful measure of that step's actual progress.
+        progress[ids_gate_passed] = 0.0
+        self.env._last_distance_to_goal = distance_to_goal.clone()
 
         # compute crashed environments if contact detected for 100 timesteps
         contact_forces = self.env._contact_sensor.data.net_forces_w
         crashed = (torch.norm(contact_forces, dim=-1) > 1e-8).squeeze(1).int()
         mask = (self.env.episode_length_buf > 100).int()
         self.env._crashed = self.env._crashed + crashed * mask
-        # TODO ----- END -----
 
         if self.cfg.is_train:
-            # TODO ----- START ----- Compute per-timestep rewards by multiplying with your reward scales (in train_race.py)
+            gate_pass_bonus = torch.zeros(self.num_envs, device=self.device)
+            gate_pass_bonus[ids_gate_passed] = torch.clamp(1.0 - pass_offset_from_center[ids_gate_passed], min=0.0)
+
             rewards = {
                 "progress_goal": progress * self.env.rew['progress_goal_reward_scale'],
+                "gate_pass": gate_pass_bonus * self.env.rew['gate_pass_reward_scale'],
                 "crash": crashed * self.env.rew['crash_reward_scale'],
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -109,7 +147,6 @@ class DefaultQuadcopterStrategy:
                 self._episode_sums[key] += value
         else:   # This else condition implies eval is called with play_race.py. Can be useful to debug at test-time
             reward = torch.zeros(self.num_envs, device=self.device)
-            # TODO ----- END -----
 
         return reward
 
@@ -300,8 +337,11 @@ class DefaultQuadcopterStrategy:
         self.env._desired_pos_w[env_ids, :2] = self.env._waypoints[waypoint_indices, :2].clone()
         self.env._desired_pos_w[env_ids, 2] = self.env._waypoints[waypoint_indices, 2].clone()
 
+        # Full 3D (not just XY) to match get_rewards()'s progress-delta calculation -- this buffer
+        # was dead/unread code before Phase 2b started using it, so there's no prior convention to
+        # preserve, and this track has real z-variation between gates (0.75m vs 2.0m).
         self.env._last_distance_to_goal[env_ids] = torch.linalg.norm(
-            self.env._desired_pos_w[env_ids, :2] - self.env._robot.data.root_link_pos_w[env_ids, :2], dim=1
+            self.env._desired_pos_w[env_ids, :] - self.env._robot.data.root_link_pos_w[env_ids, :], dim=1
         )
         self.env._n_gates_passed[env_ids] = 0
 

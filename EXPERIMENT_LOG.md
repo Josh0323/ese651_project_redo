@@ -339,3 +339,127 @@ gate-pass condition needs to actually verify passage through the opening, not ju
 gate.
 
 ---
+
+## 2026-07-29 — Phase 2a design: gate-pass detection + `_n_gates_passed`
+
+**Goal.** Replace the stub's `dist_to_gate < 0.1` isotropic check with a directional test that
+actually verifies passage through the 1×1m opening, and start incrementing `_n_gates_passed` (never
+touched in the stub). Deliberately *not* touching the progress reward or reset randomization in this
+step — isolating this one change so a smoke test afterward has exactly one thing that could explain
+whatever happens.
+
+**Design.**
+- **Mechanism**: `_pose_drone_wrt_gate[:, 0]` is the drone's position along the *current target
+  gate's own local forward axis* (confirmed directly from `quadcopter_env.py::_setup_scene` —
+  `_normal_vectors` and `_waypoints_quat` are built from the same `scipy` rotation object, so
+  whatever "local +x" means for one is exactly what it means for the other). The stub already
+  declares and resets a `_prev_x_drone_wrt_gate` buffer (init `1.0`) that's never read anywhere —
+  a strong signal this is the template author's intended hook for a sign-change test. Confirmed the
+  sign convention concretely rather than assuming it: `reset_idx` spawns the drone at
+  `gate_pos + 2·gate_normal_direction` (worked through the actual rotation arithmetic in
+  `reset_idx`'s local→world transform), i.e. on the **positive**-local-x side, matching
+  `_prev_x_drone_wrt_gate`'s `+1.0` init. So a forward pass through the gate is
+  `x_prev > 0` transitioning to `x_now <= 0` — and I don't have to independently derive or guess a
+  yaw→forward sign convention by hand to get this right, which is exactly the kind of thing that's
+  easy to get backwards (confirmed for myself that naively using `(cos ψ, sin ψ)` from yaw directly,
+  without checking it against this reset-position arithmetic, would *not* obviously have been safe
+  to assume).
+- **Opening bounds**: `torch.abs(y) < half_extent` and `torch.abs(z) < half_extent` in the same
+  gate-local frame, so it counts as passing through the opening rather than anywhere on the infinite
+  gate plane. Derived `half_extent` from `gate_model.gate_side / 2 * 0.8` (an 80%-of-true-half-width
+  margin) rather than hardcoding a number independent of the actual configured gate size — the gates
+  have real collision geometry already (confirmed in the Phase 0 entry), so this is about rejecting
+  "technically crossed the plane but nowhere near the actual opening," not about collision safety,
+  which the contact sensor already handles separately.
+- **The subtlety that actually took the most thought**: `_prev_x_drone_wrt_gate` has to be updated
+  every step for the *next* step's comparison — but on the exact step a pass is detected, `_idx_wp`
+  advances to the *next* gate, so next step's `_pose_drone_wrt_gate` will already be computed
+  relative to the new target. If I naively cache this step's (old-gate-frame) `x` value as
+  `_prev_x_drone_wrt_gate`, the very next step would compare a new-gate-frame `x_now` against an
+  old-gate-frame `x_prev` — two unrelated numbers, not a meaningful sign change, for one step per
+  gate pass. This is the exact same "reference changes discontinuously when the target switches"
+  problem as the progress-reward delta (planned for 2b), just showing up in the crossing-detector
+  instead. Fix: for envs where a pass was just detected, immediately recompute their gate-relative
+  pose against the *new* `_idx_wp` before caching it into `_prev_x_drone_wrt_gate`, mirroring what
+  `reset_idx` already does when spawning fresh into a gate's frame — non-passing envs just carry
+  forward this step's value as normal.
+- **Gate-pass reward**: adding a `gate_pass` component, scaled by proximity to the gate center at
+  the moment of passing (`1.0 - sqrt(y² + z²)`, clamped at 0) rather than a flat bonus — per the
+  TA-recommended paper's `r_pass` term, and it directly serves the "quality of pass, not just count"
+  concern `METRICS_GUIDE.md` already flags. Deliberately keeping the *progress* reward term
+  completely unchanged in this step (still the stub's `1-tanh(distance/3)` form) — 2b is where that
+  gets redesigned, and changing both at once would make a regression in the smoke test ambiguous
+  about which change caused it.
+- **Scale**: `gate_pass_reward_scale = 100.0` as a first guess, not a derived value — roughly "a
+  clean pass is worth about as much as 2 steps of maximum progress reward," chosen to be assertive
+  enough to matter against the existing `death_cost=-10.0` risk of attempting a pass near the frame,
+  but this is exactly the kind of number I expect to have to tune once I can see whether gate-passing
+  actually starts happening at all.
+
+**Conclusion / next step.** Implement in `quadcopter_strategies.py::get_rewards()`, add
+`gate_pass_reward_scale` to `train_race.py`'s reward-scale dict, syntax-check locally, then smoke
+test on the VM (still fixed gate-0 spawn) watching specifically for: does `Episode_Reward/gate_pass`
+ever go nonzero, does `_n_gates_passed` (not directly logged yet, but inferable from `_idx_wp`
+behavior) actually advance, and does the sign-change logic avoid any obviously spurious behavior
+right after a pass.
+
+**Implemented** (`quadcopter_strategies.py::get_rewards()`, `train_race.py`). Both files pass a
+local syntax check. Not yet run — bundling with Phase 2b below and smoke-testing both together,
+since 2b's change is small enough that testing them as one pass is reasonable, but see 2b's entry
+for why I still kept them as logically separate diffs.
+
+---
+
+## 2026-07-29 — Phase 2b design: delta-distance progress reward
+
+**Goal.** Replace the stub's `1 - tanh(distance/3)` closeness bonus with a potential-based *delta*
+that rewards actually closing distance to the gate — this is the direct fix for the Milestone-1
+video finding (a policy that's "close enough" under the old form has very little gradient left
+pulling it the rest of the way to the goal).
+
+**Design.**
+- `progress = last_distance_to_goal - distance_to_goal_now` (positive when the drone got closer this
+  step). This is exactly the `r_prog` form from the TA-recommended paper (`λ1·(d_{t-1}-d_t)`) — and
+  matches what I'd already planned independently before reading it, which I take as a good sign
+  rather than a coincidence to worry about.
+- **Reused existing dead plumbing, again.** `_last_distance_to_goal` is already declared and set in
+  `reset_idx` — but like `_prev_x_drone_wrt_gate` before Phase 2a, it's never actually *read*
+  anywhere in the stub. Second instance of the same pattern: scaffolding pre-wired for a design the
+  stub's actual reward logic never got around to using.
+- **One small correction while wiring it up**: `reset_idx` currently sets `_last_distance_to_goal`
+  from only the XY components (`[:, :2]`), while the `distance_to_goal` already computed elsewhere in
+  `get_rewards()` (for the old closeness bonus) is full 3D. Since this buffer was dead code before,
+  there's no established convention to preserve — I'm defining it as full 3D for consistency with
+  the rest of the function (this track has real z-variation between gates, e.g. 0.75m vs 2.0m, so a
+  2D-only progress signal would ignore altitude closing entirely). Touching this one line in
+  `reset_idx` now, ahead of 2d's actual reset-randomization work, because it's a required companion
+  to this change, not new scope — without it, the very first step after every reset would compute a
+  3D-vs-2D-mismatched delta.
+- **Same transition-discontinuity issue as Phase 2a, same fix**: on the step a gate is passed,
+  `_desired_pos_w` (this step) and `_last_distance_to_goal` (last step) end up referencing different
+  gates. Zeroing the progress term for exactly those envs on that one step, rather than trying to
+  construct a "consistent" cross-gate distance measure that wouldn't actually mean anything.
+- **Defensive clamp** (`±1.0`) on the per-step delta — not expected to ever bind at realistic speeds
+  (even at 10 m/s and a 50 Hz control rate, a legitimate single-step distance change is on the order
+  of 0.2 m), but cheap insurance against an edge case I haven't thought of rather than a load-bearing
+  part of the design.
+- **Scale left unchanged for now** (`progress_goal_reward_scale=50.0`), deliberately. The *form*
+  change alone shifts the natural per-step magnitude quite a bit (bounded-motion deltas are much
+  smaller than the old form's O(1)-every-step closeness value), so the "right" scale is now a
+  genuinely open question — but changing the form and the scale in the same pass would make it
+  impossible to tell which change was responsible for whatever the smoke test shows. Watching the
+  actual `Episode_Reward/progress_goal` magnitude in the smoke test before touching the number again.
+
+**Conclusion / next step.** Implement alongside 2a (small change, same file, and I want one smoke
+test to cover both before spending more VM time) — but keeping them as clearly separable diffs/log
+entries so if something looks wrong, there's a documented, isolated place to start looking rather
+than one undifferentiated "Phase 2" change.
+
+**Implemented** (`quadcopter_strategies.py`: `get_rewards()`'s progress calc + the companion 3D fix
+in `reset_idx`). Both files pass a local syntax check. Spawn is still hardcoded to gate 0 at this
+point — 2d is where that changes. Next: smoke test 2a+2b together on the VM, unmodified reset
+(still fixed gate-0 spawn), watching for: `Episode_Reward/gate_pass` going nonzero at all, no
+crash/NaN, and `Episode_Reward/progress_goal`'s new magnitude (expected to look different in scale
+now that it's a bounded delta instead of an O(1)-every-step closeness value).
+
+---
