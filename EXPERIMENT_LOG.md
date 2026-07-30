@@ -601,4 +601,13 @@ spawning fixed behind gate 0 — the last piece before a real full-track trainin
 **Conclusion / next step.** Implement, syntax-check, then straight to 2e — a real full-track training
 run, since 2a-2d are all in place after this.
 
+**Result.** `num_envs=256, max_iterations=20` smoke test: ran clean, no crash/NaN. `gate_pass` still
+firing (0.71–0.96) now that spawns are spread across all 7 gates, not just gate 0 — the detection
+logic generalizes correctly. `progress_goal` reads more negative than the fixed-spawn 2a+2b smoke
+test (-6 to -9 vs -0.6 to -3.5) — plausible given episodes now start with real initial velocity
+(0-3 m/s) that a still-near-random policy has no ability to purposefully exploit yet, likely
+producing bigger excursions away from goal before any correction. Not alarming at 20 iterations;
+watching whether this resolves with real training in 2e. Episode length actually slightly longer
+than the fixed-spawn test (136–142 vs 114–124 steps) — not concerning either way.
+
 ---
