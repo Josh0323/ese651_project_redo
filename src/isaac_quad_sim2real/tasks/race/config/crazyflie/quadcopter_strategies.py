@@ -206,6 +206,13 @@ class DefaultQuadcopterStrategy:
             extras["Episode_Termination/time_out"] = torch.count_nonzero(self.env.reset_time_outs[env_ids]).item()
             self.env.extras["log"].update(extras)
 
+            # Task-level metric, independent of reward-shaping choices (unlike Episode_Reward/gate_pass,
+            # which conflates pass count with pass quality and gate_pass_reward_scale). Read before
+            # _n_gates_passed gets zeroed for these envs further down in this function.
+            extras = dict()
+            extras["Episode_Metric/gates_passed_mean"] = torch.mean(self.env._n_gates_passed[env_ids].float()).item()
+            self.env.extras["log"].update(extras)
+
         # Call robot reset first
         self.env._robot.reset(env_ids)
 

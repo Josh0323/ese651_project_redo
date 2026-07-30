@@ -611,3 +611,67 @@ watching whether this resolves with real training in 2e. Episode length actually
 than the fixed-spawn test (136–142 vs 114–124 steps) — not concerning either way.
 
 ---
+
+## 2026-07-29 — Phase 2e: first real full-track training run
+
+**Goal.** With 2a-2d all in place, see whether this reward/observation/reset design actually
+produces racing behavior, not just mechanically-correct-but-untested code.
+
+**What I did.** `num_envs=4096, max_iterations=500`. Run:
+https://wandb.ai/ese651/ese651_quadcopter_josh_redo/runs/wo3rba82
+
+**Result.** Ran clean, no crash/NaN, ~16.5 minutes of compute. Trajectory over the run:
+
+| | iter ~157 | iter ~333 | final (~497-500) |
+|---|---|---|---|
+| Mean total reward | 4,584 | 7,403 | 7,566–7,729 |
+| `Episode_Reward/progress_goal` | 109.7 | 157.3 | 155–167 |
+| `Episode_Reward/gate_pass` | 56.4 | 85.1 | 85–91 |
+| `Episode_Reward/crash` | -0.17 | -0.07 | ~0 (-0.001 to -0.015) |
+| Mean episode length (max 1500) | 1,407 | 1,475 | 1,444–1,474 |
+| `Episode_Termination/died` | 0.50 | 0.13 | 0.08–0.21 |
+| `Episode_Termination/time_out` | 1.96 | 1.67 | 2.67–3.25 |
+| Mean action noise std | — | — | **0.16** |
+| Value function loss | — | — | **130–170** |
+
+Reward climbed steeply through the first third of the run and then leveled off around 7,600-7,700
+for the back half — looks like genuine convergence, not a run cut off mid-improvement the way the
+first PPO checkpoint run was. Action-noise std dropped to 0.16 (tighter than Milestone 1's 0.82) —
+a notably more confident/committed policy. Value loss is dramatically smaller than Milestone 1's
+converged value (130-170 vs 2,800-5,400), which tracks: this reward's natural per-step scale is
+smaller (bounded progress delta + sparse gate bonuses vs. the old unbounded-ish closeness value), so
+this isn't a claim the critic is "better," just operating at a different, self-consistent scale.
+
+**A real gap I noticed before trusting this**: none of the numbers above are actually the *task*
+metric `METRICS_GUIDE.md` says matters most — `gates_passed_mean`, independent of reward shaping.
+That metric exists in the guide because the original project's team built custom logging for it;
+this from-scratch stub never had it, and I'd been implicitly reading `Episode_Reward/gate_pass`
+(85-91) as a stand-in, which conflates *how many* passes happened with *how centered* each one was
+and with the `gate_pass_reward_scale=100` I picked somewhat arbitrarily. Adding the real metric
+before trusting this further (see below) rather than continuing to infer it indirectly.
+
+---
+
+## 2026-07-29 — Closing an instrumentation gap: `Episode_Metric/gates_passed_mean`
+
+**What I did.** Added a `gates_passed_mean` entry to `reset_idx()`'s existing episode-logging block
+(same pattern already used for `Episode_Termination/*`): mean of `_n_gates_passed` across the envs
+being reset, read *before* that counter gets zeroed later in the same function. This is a real,
+reward-shape-independent task metric — the kind `METRICS_GUIDE.md` explicitly argues belongs in a
+results table, unlike raw reward which "is meaningless outside this specific codebase." Not adding a
+separate `laps_completed_mean` key — training-time resets start from a random gate now (not always
+gate 0), so "laps" isn't as clean a concept mid-training as it is in eval/play mode (which already
+has its own lap-based timeout using this same counter); I can derive an approximate
+laps-per-episode figure from `gates_passed_mean / 7` in my own reporting instead of logging it
+separately.
+
+**Why now, not later**: this is exactly the "read the metrics, don't just glance at the reward
+number" principle the whole exercise is built around — I noticed I was about to report a milestone
+using an indirect proxy for the one number that actually matters most, and fixing that took one
+small, low-risk addition rather than a redesign.
+
+**Conclusion / next step.** Not worth re-running Phase 2e's already-successful 500-iteration pass
+just to backfill this one metric — it'll be available from the next real run onward. For Phase 2e
+itself, falling back to a direct checkpoint/video check to get real gates-passed evidence instead.
+
+---
