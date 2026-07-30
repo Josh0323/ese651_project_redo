@@ -497,3 +497,61 @@ isolation — per the phased plan, the real substantive training run happens at 
 "does it run correctly" check, not a convergence run. Moving to 2c.
 
 ---
+
+## 2026-07-29 — Phase 2c design: observation redesign
+
+**Goal.** Replace the stub's 13-dim, partly-world-frame observation vector with a fully egocentric
+one, and add lookahead (next gate, not just current) for the powerloop/chicane sequences.
+
+**Verified one API assumption before relying on it**, rather than guess: I wanted a body-frame
+gravity-direction vector as the attitude representation (avoids the quaternion double-cover
+ambiguity `q`/`-q`, no representational singularity, unlike the stub's raw world-frame quaternion).
+Isaac Lab commonly exposes this as `projected_gravity_b` on `ArticulationData` in other tasks I'm
+aware of, but I hadn't confirmed it exists in *this* installation — grepped
+`~/IsaacLab/source/isaaclab/isaaclab/assets/articulation/articulation_data.py` on the VM directly
+and confirmed it's defined at line 760. (This grep run into the VM's SSH/IAP flakiness noted in
+`CLAUDE.md` — took several retries and one full VM restart before landing cleanly; not a code issue,
+just infra noise worth not over-reading into.)
+
+**Design — final 19-dim vector, all body-frame/egocentric, nothing in world frame at all:**
+- `drone_lin_vel_b` (3) — already used in the stub, kept.
+- `drone_ang_vel_b` (3) — body rates; available (`root_ang_vel_b`) but unused in the stub, added.
+- `projected_gravity_b` (3) — replaces the stub's raw `drone_quat_w`. Deliberate tradeoff: this is
+  yaw-invariant by construction (only encodes roll/pitch), so yaw information is dropped from this
+  component specifically — but body angular velocity (yaw rate) and the gate-relative bearing below
+  already carry the directional information a policy needs, so this isn't an accidental loss.
+- `current_gate_pos_b`, `next_gate_pos_b` (3 each, 6 total) — gate position expressed in the
+  **drone's** body frame (`subtract_frame_transforms(drone_pos, drone_quat, gate_pos_w)`), not the
+  gate's own frame. This is a deliberate switch from `_pose_drone_wrt_gate` (drone-in-gate-frame,
+  which Phase 2a's reward/gate-pass logic uses and keeps using unchanged) to gate-in-drone-frame for
+  the *observation* specifically — "target is to my left/ahead/above" is a more directly
+  action-relevant signal for a reactive control policy than "I am right/behind/below the target's
+  own reference frame," even though the two are related by a fixed rotation and carry equivalent
+  information in principle. The stub's own commented-out hint (`gate_pos_b, _ =
+  subtract_frame_transforms(...)`) already pointed at this — another instance of unused scaffolding
+  suggesting the intended design. Adding the **next** gate (not just current) specifically because
+  the powerloop and chicane are sequential maneuvers where knowing what's coming after the immediate
+  target seems likely to matter for approach planning — this is a hypothesis, not a certainty; if it
+  turns out not to help, it's a cheap thing to ablate later.
+- `_previous_actions` (4) — already computed and maintained by the env, just not previously exposed
+  to the policy; added directly.
+- **Deliberately dropped entirely**: world-frame position and world-frame quaternion. The track
+  layout is fixed, so there's no generalization argument for absolute position the way there would
+  be on a randomized-layout task — and gate-relative vectors already supply complete navigation
+  information without it. Not including a gates-passed counter either, at least for now — the reward
+  doesn't have any lap-aware shaping yet, so there's no clear task-relevant use for it, and adding
+  observation dimensions without a concrete reason to is exactly the kind of thing worth resisting
+  per the TA's simplicity advice, even though that advice was originally about the reward.
+
+**On validation**: the plan called for checking shape/wiring "at zero GPU cost" before spending
+compute — but Isaac Sim can't run at all without the VM (no local fallback on the Mac), and
+`OnPolicyRunner` sizes the actor/critic dynamically from whatever `get_observations()` actually
+returns at runtime (confirmed back in the Phase 0 exploration — `observation_space=1` in the env cfg
+is a real no-op placeholder, not something that has to match). So the cheapest real validation is
+just a very short VM run (small `num_envs`, a couple of iterations) rather than a separate synthetic
+shape-check script — if construction fails, it fails immediately, before any real training time is
+spent either way.
+
+**Conclusion / next step.** Implement, syntax-check locally, then a small VM run.
+
+---

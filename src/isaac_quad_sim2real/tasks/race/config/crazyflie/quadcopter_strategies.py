@@ -151,51 +151,36 @@ class DefaultQuadcopterStrategy:
         return reward
 
     def get_observations(self) -> Dict[str, torch.Tensor]:
-        """Get observations. Read reset_idx() and quadcopter_env.py to see which drone info is extracted from the sim.
-        The following code is an example. You should delete it or heavily modify it once you begin the racing task."""
+        """Fully egocentric observation vector (19-dim): body-frame velocities, a body-frame gravity
+        vector for attitude (avoids the world-frame quaternion's q/-q double-cover ambiguity), and
+        gate-relative position -- expressed in the *drone's* body frame, for both the current and
+        next gate (lookahead for the powerloop/chicane sequences) -- plus the previous action. See
+        EXPERIMENT_LOG.md for the frame-choice reasoning behind each component."""
 
-        # TODO ----- START ----- Define tensors for your observation space. Be careful with frame transformations
-        #### Basic drone states, modify for your needs)
-        drone_pose_w = self.env._robot.data.root_link_pos_w
         drone_lin_vel_b = self.env._robot.data.root_com_lin_vel_b
-        drone_quat_w = self.env._robot.data.root_quat_w
+        drone_ang_vel_b = self.env._robot.data.root_ang_vel_b
+        projected_gravity_b = self.env._robot.data.projected_gravity_b
 
-        ##### Some example observations you may want to explore using
-        # Angular velocities (referred to as body rates)
-        # drone_ang_vel_b = self.env._robot.data.root_ang_vel_b  # [roll_rate, pitch_rate, yaw_rate]
+        current_gate_pos_w = self.env._waypoints[self.env._idx_wp, :3]
+        next_idx_wp = (self.env._idx_wp + 1) % self.env._waypoints.shape[0]
+        next_gate_pos_w = self.env._waypoints[next_idx_wp, :3]
 
-        # Current target gate information
-        # current_gate_idx = self.env._idx_wp
-        # current_gate_pos_w = self.env._waypoints[current_gate_idx, :3]  # World position of current gate
-        # current_gate_yaw = self.env._waypoints[current_gate_idx, -1]    # Yaw orientation of current gate
-
-        # Relative position to current gate in gate frame
-        drone_pos_gate_frame = self.env._pose_drone_wrt_gate
-
-        # Relative position to current gate in body frame
-        # gate_pos_b, _ = subtract_frame_transforms(
-        #     self.env._robot.data.root_link_pos_w,
-        #     self.env._robot.data.root_quat_w,
-        #     current_gate_pos_w
-        # )
-
-        # Previous actions
-        # prev_actions = self.env._previous_actions  # Shape: (num_envs, 4)
-
-        # Number of gates passed
-        # gates_passed = self.env._n_gates_passed.unsqueeze(1).float()
-
-        # TODO ----- END -----
+        current_gate_pos_b, _ = subtract_frame_transforms(
+            self.env._robot.data.root_link_pos_w, self.env._robot.data.root_quat_w, current_gate_pos_w
+        )
+        next_gate_pos_b, _ = subtract_frame_transforms(
+            self.env._robot.data.root_link_pos_w, self.env._robot.data.root_quat_w, next_gate_pos_w
+        )
 
         obs = torch.cat(
-            # TODO ----- START ----- List your observation tensors here to be concatenated together
             [
-                drone_pose_w,       # position in the world frame (3 dims)
-                drone_lin_vel_b,    # velocity in the body frame (3 dims)
-                drone_quat_w,       # quaternion in the world frame (4 dims)
-                drone_pos_gate_frame
+                drone_lin_vel_b,             # body-frame linear velocity (3)
+                drone_ang_vel_b,              # body-frame angular velocity / body rates (3)
+                projected_gravity_b,          # body-frame gravity direction -- attitude (3)
+                current_gate_pos_b,           # current target gate, in the drone's body frame (3)
+                next_gate_pos_b,               # next gate after that -- lookahead (3)
+                self.env._previous_actions,   # previous action (4)
             ],
-            # TODO ----- END -----
             dim=-1,
         )
         observations = {"policy": obs}
