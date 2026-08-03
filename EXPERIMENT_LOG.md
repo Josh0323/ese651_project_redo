@@ -794,4 +794,41 @@ few iterations) purely to confirm the new keys appear and look sane (no crash, a
 uniform-ish across gates at low iteration count since a near-random policy shouldn't yet show a real
 skill gap) before reading anything into the actual pass-rate numbers.
 
+**Implemented and smoke-tested** (`num_envs=256, max_iterations=20`, same scale as prior smoke
+tests). Ran clean, no crash/NaN/traceback. All 14 new keys
+(`Episode_Metric/gate{0-6}_pass_count_mean`, `gate{0-6}_attempted_mean`) appear and update every
+logging interval.
+
+**Correctness check before trusting any of this**: since `_gate_pass_counts` is incremented in
+exactly the same place `_n_gates_passed` already is (just indexed by the specific gate instead of
+summed), the seven `gate{i}_pass_count_mean` values for any given logging call should sum to exactly
+that same call's `gates_passed_mean` — they're two views of the same underlying increments. Checked
+this directly against the final logged iteration: `0.0417+0.0382+0.0625+0.0000+0.1007+0.0000+0.0694
+= 0.3125`, exactly matching the logged `gates_passed_mean: 0.3125`. Also checked the weaker
+`attempted_mean[i] >= pass_count_mean[i]` invariant (can't pass a gate never attempted) holds for
+all 7 gates. Both checks pass — this is stronger evidence the wiring is correct than "it didn't
+crash," since a bug that mis-indexed which gate got credited (e.g. off-by-one, or crediting the new
+target instead of the one just passed) would still run without error but would break the sum
+identity.
+
+**Video review, per the new standing rule** (`play_race.py --num_envs 1 --video --video_length 300`
+on this run's `best_model.pt`, 8 frames sampled across the ~6s clip, downloaded and inspected with
+local `ffmpeg`). Camera is fixed in world frame (gates sit in identical screen positions across every
+sampled frame — this is not a drone-following camera). The drone itself barely appears to move across
+frames 1, 2, 4, and 8 — but this is expected, not a bug, for two independent reasons: (1) at only 20
+iterations the policy is essentially the same as Milestone 1's own 20-iteration smoke test, which
+showed no meaningful behavior until several hundred iterations in; (2) `reset_idx`'s play-mode branch
+always respawns near the fixed `_initial_wp` gate (not training mode's uniform-random gate choice),
+so even the ~2 resets expected within a 300-step clip at this policy's ~136-step mean episode length
+would land in visually similar spots. No visual glitches, no off-track teleporting, gates render
+consistently — this smoke test's video job is just to confirm nothing is visibly broken, not to show
+racing, and it does.
+
+**Conclusion.** The per-gate breakdown mechanism is validated — both by the sum-invariant check
+(strong evidence of correct wiring, not just crash-free execution) and by the video (confirms nothing
+about this instrumentation broke the environment itself). Not reading anything into the actual
+pass-rate numbers yet, as planned — 256 envs / 20 iterations is far too small/short a sample for the
+powerloop/chicane question this exists to answer. Next: a real, longer run (matching or exceeding
+Phase 2e's scale) specifically to get a trustworthy per-gate signal.
+
 ---
