@@ -271,6 +271,12 @@ class QuadcopterEnv(DirectRLEnv):
 
         self._n_gates_passed = torch.zeros(self.num_envs, device=self.device, dtype=torch.int)
 
+        # Per-gate breakdown (Phase 3a, see EXPERIMENT_LOG.md): pass counts and attempt flags for
+        # each specific gate index, not just the aggregate _n_gates_passed above -- lets us tell
+        # whether the powerloop/chicane gates specifically lag the rest of the track.
+        self._gate_pass_counts = torch.zeros(self.num_envs, self._waypoints.shape[0], device=self.device, dtype=torch.int)
+        self._gate_attempted = torch.zeros(self.num_envs, self._waypoints.shape[0], device=self.device, dtype=torch.bool)
+
         self._crashed = torch.zeros(self.num_envs, device=self.device, dtype=torch.int)
 
         # Motor dynamics

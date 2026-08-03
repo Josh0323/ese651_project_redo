@@ -729,3 +729,69 @@ per-gate breakdown to check the powerloop/chicane specifically before investing 
 leaning toward (b) since it's cheaper and more informative than just scaling up blindly.
 
 ---
+
+## 2026-08-04 — Phase 3a design: per-gate pass/attempt breakdown
+
+**Goal.** `Episode_Metric/gates_passed_mean` (added right after Milestone 2) is a single aggregate
+across all 7 gates — it can't answer the actual open question flagged in Milestone 2's honest-gaps
+list: whether the powerloop (gates 2/3) or chicane (5/6/0) specifically lag the rest of the track.
+Need a per-gate-index breakdown before deciding whether to just scale up training length blindly.
+
+**Why a raw per-gate pass count isn't enough on its own.** A naive `gate{i}_pass_count_mean` — mean
+of how many times gate i was passed per episode — conflates two different things: (a) episodes
+rarely even *reaching* gate i, vs. (b) gate i being reached plenty but hard to actually pass once
+there. Since `reset_idx` (Phase 2d) randomizes the starting gate uniformly over all 7, every gate is
+equally likely to be an episode's *first* target — but not equally likely to be *reached*, since
+gates are attempted strictly in sequence after that (mod 7) and death can happen at any point. If
+gate 2 (powerloop entry) is genuinely hard, gates 3/4/5/6/0 would show reduced pass counts too,
+purely because fewer episodes survive long enough to even attempt them — not because those later
+gates are themselves difficult. A raw count can't distinguish those two stories, and conflating them
+is exactly the kind of thing that could send me chasing the wrong gate.
+
+**Design.**
+- Two new per-`(env, gate)` buffers in `quadcopter_env.py`, sized off `self._waypoints.shape[0]`
+  (declared right after `_n_gates_passed`; confirmed `_setup_scene()` — which sets `_waypoints` —
+  runs during `super().__init__()`, since existing code just a few lines later already depends on
+  `self._robot`, which only `_setup_scene` constructs, so `_waypoints` is guaranteed to already exist
+  at this point):
+  - `_gate_pass_counts` (`int`, `[num_envs, 7]`) — how many times each specific gate index was
+    passed this episode.
+  - `_gate_attempted` (`bool`, `[num_envs, 7]`) — whether each specific gate index was ever the
+    active target this episode.
+- **`get_rewards()`**: at the point `ids_gate_passed` is computed, `self.env._idx_wp[ids_gate_passed]`
+  is still the *pre-increment* value — i.e. exactly the physical gate index that was just passed.
+  Use it to index into `_gate_pass_counts` before the existing `_idx_wp` increment line runs. After
+  that increment, mark the *new* `_idx_wp` as attempted in `_gate_attempted` — this is what chains
+  "attempted" forward through the course within an episode (gate i+1 becomes attempted the moment
+  gate i is passed), on top of the reset-time marking below. Both of these run unconditionally
+  (matching how `_idx_wp`/`_n_gates_passed` themselves update regardless of `is_train` — play mode
+  still needs correct gate-tracking state for its own lap-based timeout, even though reward value
+  itself is zeroed in that branch).
+- **`reset_idx()`**: in the existing logging block (same place `gates_passed_mean` is computed, read
+  *before* zeroing — same ordering already established for `_n_gates_passed`), loop over all 7 gates
+  and log `Episode_Metric/gate{i}_pass_count_mean` and `Episode_Metric/gate{i}_attempted_mean` as the
+  mean of each buffer's column across the resetting envs. Zero both buffers alongside the existing
+  `_n_gates_passed[env_ids] = 0` line (unconditional, not gated by `is_train`, same reasoning as
+  above), then mark the *new* starting gate (`waypoint_indices`, already computed earlier in this
+  function for the position/heading randomization) as attempted — an episode starts already "in
+  attempt" of its spawn gate.
+- **Logging raw counts, not a pre-divided rate.** Considered logging a single `gate{i}_pass_rate`
+  (pass_count/attempted) per gate instead of 14 separate keys, but that requires guarding against
+  divide-by-zero for any gate with zero attempts in a given reset batch (small at smoke-test env
+  counts, not impossible). Logging both raw components lets me compute the actual per-attempt rate
+  at analysis time (W&B history / pandas), where I can handle a near-zero denominator explicitly,
+  rather than baking a guard into the training hot path. Also keeps both signals independently
+  inspectable — "rarely attempted" and "attempted but rarely passed" are both useful to see
+  separately, not just their ratio.
+- **Gate 3 and gate 6 stay separate indices.** They're the same physical prim (confirmed in the
+  `powerloop` track dict: both at `[0.625, 0.0, 0.75]`, opposite yaw) but functionally different
+  maneuvers — gate 3 is the powerloop's exit, gate 6 is the chicane's first gate. Merging their
+  counts would hide exactly the kind of directional-difficulty signal this breakdown exists to find.
+
+**Conclusion / next step.** Implement in `quadcopter_env.py` (buffers) and `quadcopter_strategies.py`
+(`get_rewards()`, `reset_idx()`), local syntax check, then a smoke test on the VM (small `num_envs`,
+few iterations) purely to confirm the new keys appear and look sane (no crash, attempted_mean roughly
+uniform-ish across gates at low iteration count since a near-random policy shouldn't yet show a real
+skill gap) before reading anything into the actual pass-rate numbers.
+
+---

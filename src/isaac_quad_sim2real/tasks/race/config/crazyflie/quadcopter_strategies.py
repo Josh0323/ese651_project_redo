@@ -91,8 +91,14 @@ class DefaultQuadcopterStrategy:
         # Distance from the gate's centerline at the moment of passing, for the quality-scaled bonus.
         pass_offset_from_center = torch.sqrt(y_now**2 + z_now**2)
 
+        # Per-gate breakdown (Phase 3a): record which specific gate index was passed *before* _idx_wp
+        # advances below, then mark the new target as "attempted" right after -- chains attempts
+        # forward through the course within an episode (reset_idx marks the very first one at spawn).
+        self.env._gate_pass_counts[ids_gate_passed, self.env._idx_wp[ids_gate_passed]] += 1
+
         self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % self.env._waypoints.shape[0]
         self.env._n_gates_passed[ids_gate_passed] += 1
+        self.env._gate_attempted[ids_gate_passed, self.env._idx_wp[ids_gate_passed]] = True
 
         # set desired positions in the world frame
         self.env._desired_pos_w[ids_gate_passed, :2] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], :2]
@@ -211,6 +217,21 @@ class DefaultQuadcopterStrategy:
             # _n_gates_passed gets zeroed for these envs further down in this function.
             extras = dict()
             extras["Episode_Metric/gates_passed_mean"] = torch.mean(self.env._n_gates_passed[env_ids].float()).item()
+            self.env.extras["log"].update(extras)
+
+            # Per-gate breakdown (Phase 3a): raw pass counts and attempt flags per gate index, not a
+            # pre-divided rate -- avoids a divide-by-zero for any gate with zero attempts in this
+            # reset batch; the actual per-attempt pass rate gets computed at analysis time instead.
+            # Also read before the underlying buffers get zeroed further down.
+            extras = dict()
+            num_gates = self.env._waypoints.shape[0]
+            for i in range(num_gates):
+                extras[f"Episode_Metric/gate{i}_pass_count_mean"] = torch.mean(
+                    self.env._gate_pass_counts[env_ids, i].float()
+                ).item()
+                extras[f"Episode_Metric/gate{i}_attempted_mean"] = torch.mean(
+                    self.env._gate_attempted[env_ids, i].float()
+                ).item()
             self.env.extras["log"].update(extras)
 
         # Call robot reset first
@@ -352,6 +373,12 @@ class DefaultQuadcopterStrategy:
             self.env._desired_pos_w[env_ids, :] - self.env._robot.data.root_link_pos_w[env_ids, :], dim=1
         )
         self.env._n_gates_passed[env_ids] = 0
+
+        # Per-gate breakdown (Phase 3a): zero after logging above, then mark this episode's starting
+        # gate as attempted immediately -- an episode begins already "in attempt" of its spawn gate.
+        self.env._gate_pass_counts[env_ids] = 0
+        self.env._gate_attempted[env_ids] = False
+        self.env._gate_attempted[env_ids, waypoint_indices] = True
 
         # Write state to simulation
         self.env._robot.write_root_link_pose_to_sim(default_root_state[:, :7], env_ids)
