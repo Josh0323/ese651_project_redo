@@ -19,6 +19,28 @@ here should be your own reasoning, tried and iterated on its own merits. If you 
 solution to Kevin's, that's fine — the point is arriving there through your own hypothesis-and-test
 process, not copy-pasting.
 
+## Status (updated 2026-07-30 — read this before the assignment description below, which is
+written from the original "nothing done yet" perspective and no longer reflects reality)
+
+- **Section 2 (PPO) — done, Milestone 1.** `PPO.update()` is implemented in `ppo.py` and validated:
+  a 600-iteration/2048-env run on the unmodified stub reward converged cleanly (reward, episode
+  length, action-noise-std decay, value-loss convergence all behaving as expected), confirmed
+  against a checkpoint video, not just the curves.
+- **Section 3 (reward/observations/reset) — initial version done, Milestone 2.** `get_rewards()`,
+  `get_observations()`, and `reset_idx()` in `quadcopter_strategies.py` are no longer the stub —
+  directional gate-pass detection, delta-distance progress reward, a fully egocentric 19-dim
+  observation vector with next-gate lookahead, and randomized resets are all implemented and
+  validated. First full-track training run produced a policy that visibly races through multiple
+  gates with real speed (confirmed via video, not just reward numbers) rather than the
+  reward-hacking static hover the Section-2-only checkpoint found.
+- **Not done yet**: per-gate breakdown to check whether the powerloop (gates 2/3) or chicane
+  (5/6/0) specifically lag the rest of the track, hyperparameter tuning, the domain-randomization
+  ablation (Phase 5 in the plan), and the final report.
+- **Full detail, real numbers, and the reasoning behind every design choice**: `EXPERIMENT_LOG.md`
+  in this repo — read that, not this summary, before making further changes. The original
+  implementation plan (still the roadmap for what's left) is at
+  `/Users/joshthekorean/.claude/plans/humming-wondering-adleman.md`.
+
 ## Scope: simulation only
 
 Just Phase 1 (train a racing policy in Isaac Lab). **Not** Phase 2 (sim2real deployment on a real
@@ -103,6 +125,21 @@ These cost real debugging time today; avoid repeating them:
    slows training down noticeably (periodic video capture overhead), so leave it off for real
    training runs and only enable it for `play_race.py` evaluation clips (or a final training run
    you specifically want on video).
+6. **The `.bashrc` non-interactive-shell issue is broader than just `WANDB_API_KEY`** (see the
+   Environment section above) — the VM's `~/.bashrc` has the standard Debian
+   return-if-not-interactive guard right at the top, so `conda activate`/`conda env list` also
+   silently fail to find `conda` at all over a plain `gcloud compute ssh --command=`, not just the
+   W&B key. Use full binary paths instead (`~/anaconda3/envs/env2/bin/python`), don't rely on
+   `conda activate` working in non-interactive SSH commands.
+7. **The VM's SSH/IAP tunnel is flaky in a way that isn't about boot timing.** Even well after a VM
+   is confirmed `RUNNING` (via `gcloud compute instances describe`) and has answered SSH
+   successfully once, individual `gcloud compute ssh` calls can still fail transiently with
+   `Error while connecting [4003: 'failed to connect to backend']` or `Connection refused`. This
+   isn't necessarily "still booting" — it recurred minutes into an already-working session. Retry
+   with backoff (a handful of attempts, ~10s apart) rather than assuming a single failure means the
+   VM is down; but also actually verify via `describe` if several retries in a row fail, since
+   rapid-fire overlapping start/stop calls in the same session can genuinely race each other and
+   leave the VM in a state other than what you last requested.
 
 ## The actual assignment (transcribed from the course handouts, so you don't need the PDFs)
 
@@ -207,6 +244,13 @@ This is the point of the whole exercise, more than the final metrics:
    worked — that's the actual valuable part for someone trying to learn the process.
 6. **Be honest about uncertainty.** If a result is ambiguous or you're not sure why something
    happened, say so in the log rather than presenting a tidier story than the data supports.
+7. **Generate a video after every completed training run, not just at milestones** (added
+   2026-08-04, standing rule going forward). Immediately after any `train_race.py` run finishes —
+   smoke test or real run — load its `best_model.pt` into `play_race.py --video` before moving on.
+   Josh wants to visually check progress alongside the metrics every time, not only when a
+   checkpoint happens to seem worth a closer look. This is the same practice that already caught
+   the Milestone-1 corner-hovering issue the reward curves alone didn't make obvious — the point is
+   to make it automatic rather than something invoked case-by-case.
 
 ## Deliverables
 
