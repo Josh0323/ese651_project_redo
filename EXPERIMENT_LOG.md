@@ -832,3 +832,87 @@ powerloop/chicane question this exists to answer. Next: a real, longer run (matc
 Phase 2e's scale) specifically to get a trustworthy per-gate signal.
 
 ---
+
+## 2026-08-06 — Phase 3b: real run with per-gate breakdown — does the powerloop/chicane actually lag?
+
+**Goal.** Answer the actual question this whole instrumentation effort exists for: at a real training
+scale, do gates 2/3 (powerloop) or 5/6/0 (chicane) show a measurably lower pass rate than the rest of
+the track, or was that always a plausible-sounding hypothesis without evidence behind it?
+
+**What I did.** `num_envs=4096, max_iterations=500` — identical config to Phase 2e, so this is a clean
+re-run of an already-validated scale with the new per-gate logging active, not a new/riskier setting.
+Ran on the VM (one GCP hiccup along the way: `us-central1-a` hit a real `ZONE_RESOURCE_POOL_EXHAUSTED`
+GPU stockout on the first restart attempt — not the usual SSH-tunnel flakiness — resolved on retry
+without needing to fall back to migrating the VM to a different zone).
+
+**Result — convergence matches Phase 2e almost exactly**, confirming this is the same policy/config
+class, not a fluke: final mean reward 7,728.63 (vs. Phase 2e's 7,566–7,729), mean episode length
+1,474.41 (vs. 1,444–1,474), action-noise std 0.16 (vs. 0.16), `crash` essentially zero, `time_out`
+dominant over `died` (0.083 died vs. 3.25 time_out). The new number Phase 2e never had:
+**`Episode_Metric/gates_passed_mean` = 29.85** — roughly **4.26 laps per episode** (29.85 / 7), a real,
+reward-shape-independent measurement of how well this policy actually races, not just a reward score.
+
+**Correctness re-check at full scale**: parsed all 500 iterations' console output (not just the final
+one) and verified the sum invariant (`Σ gate{i}_pass_count_mean == gates_passed_mean`) holds exactly
+at *every single logged iteration*, not just the end state — 0 violations out of 500. This is a much
+stronger correctness guarantee than the smoke test alone gave, since it's now been checked across the
+entire trajectory from a near-random initial policy through convergence, not one static snapshot.
+
+**The actual per-gate answer.** Final-iteration breakdown (pass_count / attempted / rate):
+
+| gate | pass  | attempted | rate  |
+|------|-------|-----------|-------|
+| 0    | 4.255 | 0.9896    | 4.300 |
+| 1    | 4.216 | 0.9896    | 4.260 |
+| 2    | 4.276 | 1.0000    | 4.276 |
+| 3    | 4.217 | 1.0000    | 4.217 |
+| 4    | 4.158 | 0.9896    | 4.202 |
+| 5    | 4.369 | 0.9896    | 4.415 |
+| 6    | 4.360 | 0.9896    | 4.406 |
+
+Grouped by track segment: **powerloop (2,3) avg 4.247**, **chicane (5,6,0) avg 4.374**, **plain gates
+(1,4) avg 4.231**. Total spread across all 7 gates is 4.202–4.415 — about **5% of the mean**. Tracked
+the full trend (not just the endpoint) at iterations 0/50/100/150/200/250/300/350/400/450/499: at
+every checkpoint, all 7 gates rise together in a tight band (e.g. at iteration 200: 2.67–3.03; at 400:
+4.07–4.35) — there's no point in training where one gate visibly detaches from the pack as a
+bottleneck while the others pull ahead. Also checked gate 3 vs. gate 6 specifically (the same physical
+gate prim, passed in opposite directions — powerloop exit vs. chicane entry) since a directional
+asymmetry there would be the most direct evidence of the powerloop's climb-out actually being harder
+than the chicane's dash through the same opening: they track within ~0.1–0.25 of each other at every
+checkpoint (e.g. final: 4.22 vs. 4.36), not a meaningfully different story.
+
+**Also notable**: `attempted_mean` is 0.99–1.00 for every gate — i.e. virtually every episode touches
+every gate at least once. This resolves the exact confound the Phase 3a design worried about (raw
+pass counts conflating "rarely reached" with "reached but rarely passed") — at this training length,
+episodes are long enough (mean 1,474 of 1,500 steps, ~4+ laps) that reachability is saturated and no
+longer a live concern. That confound would matter for a much shorter-episode policy (e.g. this same
+metric read early in training, or at smoke-test scale), just not for this converged one.
+
+**Video review** (`play_race.py --video_length 1000`, ~20s clip, 12 frames sampled, downloaded and
+inspected with local `ffmpeg`). Same fixed world-frame camera as the smoke test's video. The goal
+marker (red dot, `_desired_pos_w`) visibly moves between different gates across the sampled frames
+(bottom-right gate → bottom-left gate → the center gate → back to a side gate), which is direct visual
+confirmation that the target is actually advancing through the course over the clip, not stuck — this
+matches the 4+ laps/episode the metrics report. Honestly could not definitively pick out the drone's
+own small body against the grid floor at this camera's zoom level in still frames (unlike Milestone
+1/2's videos, which used a closer/different camera framing) — the goal-marker movement is the visual
+evidence here, not a direct sighting of the drone in flight. No visual glitches, no off-track
+teleporting, rendering consistent throughout.
+
+**Honest caveats.** This is a single run/seed — no repeated trials to put a confidence interval on the
+~5% spread, so "no bottleneck" is the best read of the available evidence, not a claim the seven gates
+are provably equal. The gate that ended up *lowest* (gate 4, a plain non-powerloop/chicane gate) and
+the *highest* (gate 5, chicane) both undercut the naive "hard maneuvers must lag" prior in different
+directions, which is itself a useful (if slightly surprising) data point rather than a clean story.
+
+**Conclusion.** At this training scale, neither the powerloop nor the chicane shows a measurable
+per-gate performance gap — all 7 gates converge together, tightly clustered, over the full course of
+training. This directly answers the question Phase 3a was built to investigate: there's no isolated
+bottleneck here to fix with gate-specific reward shaping or curriculum changes. That reframes the
+"scale up training length blindly" option from Milestone 2 — it's no longer really "blind": since
+there's no localized weak point to target instead, further improvement (if pursued) should come from
+genuinely general levers — more iterations/hyperparameter tuning, or the still-untouched domain
+randomization ablation — rather than a gate-specific fix. `EXPERIMENT_LOG.md` is caught up to the
+current state of the repo as of this entry.
+
+---

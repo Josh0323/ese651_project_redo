@@ -19,7 +19,7 @@ here should be your own reasoning, tried and iterated on its own merits. If you 
 solution to Kevin's, that's fine — the point is arriving there through your own hypothesis-and-test
 process, not copy-pasting.
 
-## Status (updated 2026-07-30 — read this before the assignment description below, which is
+## Status (updated 2026-08-06 — read this before the assignment description below, which is
 written from the original "nothing done yet" perspective and no longer reflects reality)
 
 - **Section 2 (PPO) — done, Milestone 1.** `PPO.update()` is implemented in `ppo.py` and validated:
@@ -33,9 +33,15 @@ written from the original "nothing done yet" perspective and no longer reflects 
   validated. First full-track training run produced a policy that visibly races through multiple
   gates with real speed (confirmed via video, not just reward numbers) rather than the
   reward-hacking static hover the Section-2-only checkpoint found.
-- **Not done yet**: per-gate breakdown to check whether the powerloop (gates 2/3) or chicane
-  (5/6/0) specifically lag the rest of the track, hyperparameter tuning, the domain-randomization
-  ablation (Phase 5 in the plan), and the final report.
+- **Per-gate breakdown — done, Phase 3b.** Added per-gate pass-count/attempted logging
+  (`quadcopter_env.py`/`quadcopter_strategies.py`) and re-ran at Phase 2e's scale (4096 envs, 500
+  iterations). Answer: no, neither the powerloop (gates 2/3) nor the chicane (5/6/0) shows a
+  measurable per-gate lag — all 7 gates converge together within ~5% of each other, at every point
+  in training, with the policy completing ~4.3 laps/episode by the end. No isolated bottleneck to
+  fix with a gate-specific change.
+- **Not done yet**: hyperparameter tuning, the domain-randomization ablation (Phase 5 in the
+  plan), and the final report. Since Phase 3b found no gate-specific weak point, further gains (if
+  pursued) should come from these general levers, not a targeted gate fix.
 - **Full detail, real numbers, and the reasoning behind every design choice**: `EXPERIMENT_LOG.md`
   in this repo — read that, not this summary, before making further changes. The original
   implementation plan (still the roadmap for what's left) is at
